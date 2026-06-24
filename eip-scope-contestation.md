@@ -3,7 +3,7 @@ eip: <TBD>
 title: Scope Contestation Registry
 description: A permissionless registry that makes the incompleteness of an agent's committed observation scope contestable and recomputable on-chain.
 author: Damon Zwicker (@damonzwicker), Tiago Merlini (@TMerlini), Jimmy Shi (@JimmyShi22), Fede (@babyblueviper1)
-discussions-to: <Ethereum Magicians thread URL — create before filing>
+discussions-to: https://ethereum-magicians.org/t/erc-xxxx-scope-contestation-registry-permissionless-observation-scope-completeness-contestability/28856
 status: Draft
 type: Standards Track
 category: ERC
