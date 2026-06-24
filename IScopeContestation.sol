@@ -27,6 +27,14 @@ pragma solidity ^0.8.20;
 ///                        on any property knowable only to the committer. An
 ///                        implementation MUST NOT claim conformance for a scheme
 ///                        whose soundness rests on a non-recomputable assumption.
+///      2b. CARDINALITY BINDING (truncation resistance):
+///                        a conforming scheme MUST non-malleably bind the scope's
+///                        cardinality to its commitment (e.g. committed within
+///                        `scopeRoot`), such that `verifyAbsence` cannot be
+///                        satisfied against a proper prefix (truncation) of the
+///                        committed set. Cardinality carried only within an
+///                        opaque proof that is not itself bound to the commitment
+///                        does NOT satisfy this requirement.
 ///      3. RECOMPUTABLE:  the absence proof MUST be verifiable from public data
 ///                        alone. No trusted party, no private store.
 ///      4. PERMANENT:     a successful nomination MUST be recorded and MUST NOT
@@ -52,6 +60,13 @@ pragma solidity ^0.8.20;
 ///      proof valid under one implementation need not verify under another).
 ///      Implementations MAY expose a scheme identifier for discoverability.
 ///
+/// @dev CARDINALITY:
+///      Scope cardinality is NOT a parameter of this interface. It is
+///      implementation data that, where a scheme needs it, MUST be bound into
+///      `scopeRoot` per guarantee 2b. Implementations MAY surface cardinality
+///      through their own extended (non-normative) event or view for forensic
+///      readability; doing so MUST NOT be relied upon for soundness.
+///
 /// @dev SCOPE OF THIS INTERFACE (what it does NOT do):
 ///      The registry does NOT authenticate that `committer` is entitled to
 ///      commit against `commitmentHash`. Binding an actor to an external
@@ -72,15 +87,15 @@ interface IScopeContestation {
     /// @notice Emitted when an actor commits an observation scope.
     /// @param scopeId        Derived identifier (never caller-asserted).
     /// @param commitmentHash Opaque external commitment this scope binds to.
-    /// @param scopeRoot      Commitment to the declared coordinate set
-    ///                       (implementation-defined: Merkle root, accumulator).
-    /// @param count          Number of declared coordinates (see `commitScope`).
+    /// @param scopeRoot      Commitment to the declared coordinate set, with
+    ///                       cardinality bound in per guarantee 2b
+    ///                       (implementation-defined: e.g. a Merkle root over a
+    ///                       sorted set, bound with the count).
     /// @param committer      Address that committed the scope.
     event ScopeCommitted(
         bytes32 indexed scopeId,
         bytes32 indexed commitmentHash,
         bytes32 scopeRoot,
-        uint256 count,
         address committer
     );
 
@@ -103,25 +118,14 @@ interface IScopeContestation {
     /// @dev    `scopeId` MUST be derived and MUST bind the committer (e.g.
     ///         include `msg.sender` in the preimage) so a scope cannot be
     ///         squatted by a third party committing the same root first.
-    ///
-    ///         OPEN CO-AUTHOR QUESTION - `count`:
-    ///         `count` is present because index-based proof schemes (e.g. the
-    ///         reference sorted-Merkle boundary cases) need the cardinality
-    ///         on-chain. Pure-accumulator schemes do not. Carrying it here makes
-    ///         the interface mildly Merkle-flavored. Two resolutions for the
-    ///         group: (a) keep `count` explicit, schemes that don't need it MAY
-    ///         ignore it; (b) drop `count` from the signature and require the
-    ///         representation to commit to cardinality inside `scopeRoot`, fully
-    ///         scheme-agnostic - at the cost of changing the reference impl.
-    ///         Defaulting to (a) pending the group's call.
+    ///         `scopeRoot` MUST bind the scope's cardinality per guarantee 2b.
     /// @param commitmentHash Opaque external commitment.
-    /// @param scopeRoot      Commitment to the declared coordinate set.
-    /// @param count          Number of declared coordinates (MUST be > 0).
+    /// @param scopeRoot      Commitment to the declared coordinate set
+    ///                       (cardinality bound in).
     /// @return scopeId       Derived scope identifier.
     function commitScope(
         bytes32 commitmentHash,
-        bytes32 scopeRoot,
-        uint256 count
+        bytes32 scopeRoot
     ) external returns (bytes32 scopeId);
 
     /// @notice Permissionlessly nominate a coordinate absent from a committed
@@ -129,6 +133,9 @@ interface IScopeContestation {
     /// @dev    MUST revert if `coordinate` is present in the scope (soundness).
     ///         MUST revert if `coordinate` was already nominated (replay).
     ///         MUST revert if `scopeId` does not exist.
+    ///         MUST revert if the proof attempts to satisfy absence against a
+    ///         truncated set (cardinality not matching the binding in
+    ///         `scopeRoot`), per guarantee 2b.
     ///         On success MUST record the nomination permanently and emit
     ///         `CoordinateNominated`. `proof` is implementation-defined.
     /// @param scopeId    The scope to nominate against.
@@ -174,7 +181,6 @@ interface IScopeContestation {
     /// @notice Read a committed scope.
     /// @return commitmentHash Opaque external commitment the scope binds to.
     /// @return scopeRoot      Commitment to the declared coordinate set.
-    /// @return count          Number of declared coordinates.
     /// @return committer      Address that committed the scope (zero if none).
     function getScope(bytes32 scopeId)
         external
@@ -182,7 +188,7 @@ interface IScopeContestation {
         returns (
             bytes32 commitmentHash,
             bytes32 scopeRoot,
-            uint256 count,
             address committer
         );
 }
+
