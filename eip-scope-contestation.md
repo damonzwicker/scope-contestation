@@ -257,6 +257,12 @@ binding (guarantee 4).
 - **Non-adjudication.** A nomination asserts only that a coordinate was not
   observed, never that it was relevant. Consumers MUST NOT treat a nomination as
   an adjudicated fault.
+- **Auditor truncation.** In a bonded-audit instance, the reviewed scope set is
+  a scope-contestation scope and inherits the cardinality-binding requirement
+  (guarantee 4). Without it, an auditor could understate the count of reviewed
+  paths and retroactively claim an exploited path was never in scope, evading
+  nomination. The cardinality binding closes this: the auditor's claimed scope
+  is fixed at commit time and cannot be shrunk post-hoc.
 - **Coordinate canonicalization.** A non-canonical mapping undermines the
   practical completeness guarantee; see Specification.
 - **Cross-chain replay.** Nomination de-duplication is per-deployment. Cross-chain
