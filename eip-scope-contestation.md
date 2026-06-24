@@ -72,15 +72,15 @@ ERC-165.
 
 ```solidity
 interface IScopeContestation {
-    event ScopeCommitted(bytes32 indexed scopeId, bytes32 indexed commitmentHash, bytes32 scopeRoot, uint256 count, address committer);
+    event ScopeCommitted(bytes32 indexed scopeId, bytes32 indexed commitmentHash, bytes32 scopeRoot, address committer);
     event CoordinateNominated(bytes32 indexed scopeId, bytes32 indexed coordinate, address nominator);
 
-    function commitScope(bytes32 commitmentHash, bytes32 scopeRoot, uint256 count) external returns (bytes32 scopeId);
+    function commitScope(bytes32 commitmentHash, bytes32 scopeRoot) external returns (bytes32 scopeId);
     function nominate(bytes32 scopeId, bytes32 coordinate, bytes calldata proof) external;
 
     function verifyAbsence(bytes32 scopeId, bytes32 coordinate, bytes calldata proof) external view returns (bool);
     function isNominated(bytes32 scopeId, bytes32 coordinate) external view returns (bool);
-    function getScope(bytes32 scopeId) external view returns (bytes32 commitmentHash, bytes32 scopeRoot, uint256 count, address committer);
+    function getScope(bytes32 scopeId) external view returns (bytes32 commitmentHash, bytes32 scopeRoot, address committer);
 }
 ```
 
@@ -100,23 +100,35 @@ A conformant implementation MUST satisfy all of the following.
    depend on any property knowable only to the committer. An implementation MUST
    NOT claim conformance for a scheme whose soundness rests on a non-recomputable
    assumption.
-4. **Recomputable.** An absence proof MUST be verifiable from public data alone.
-5. **Permanent.** A successful nomination MUST be recorded and MUST NOT be
+4. **Cardinality binding (truncation resistance).** A conforming scheme MUST
+   non-malleably bind the scope's cardinality to its commitment (e.g. committed
+   within `scopeRoot`), such that `verifyAbsence` cannot be satisfied against a
+   proper prefix (truncation) of the committed set. Cardinality carried only
+   within an opaque proof that is not itself bound to the commitment does NOT
+   satisfy this requirement.
+5. **Recomputable.** An absence proof MUST be verifiable from public data alone.
+6. **Permanent.** A successful nomination MUST be recorded and MUST NOT be
    deletable or modifiable afterward.
-6. **Non-adjudicating.** The registry MUST NOT decide whether a nominated
+7. **Non-adjudicating.** The registry MUST NOT decide whether a nominated
    coordinate mattered.
 
 ### `commitScope`
 
 `scopeId` MUST be derived (not caller-supplied) and MUST bind the committer so a
-scope cannot be squatted by a third party committing the same root first. `count`
-MUST be greater than zero.
+scope cannot be squatted by a third party committing the same root first.
+`scopeRoot` MUST bind the scope's cardinality per guarantee 4. Scope cardinality
+is intentionally NOT a parameter of this interface; it is implementation data
+bound into `scopeRoot`. Implementations MAY surface it through their own extended,
+non-normative event or view for forensic readability, which MUST NOT be relied
+upon for soundness.
 
 ### `nominate`
 
 MUST revert if the scope does not exist, if the coordinate is present in the
-scope, or if the coordinate has already been nominated for that scope. On success
-it MUST record the nomination permanently and emit `CoordinateNominated`.
+scope, if the coordinate has already been nominated for that scope, or if the
+proof attempts to satisfy absence against a truncated set (cardinality not
+matching the binding in `scopeRoot`). On success it MUST record the nomination
+permanently and emit `CoordinateNominated`.
 
 ### `verifyAbsence`
 
@@ -157,11 +169,17 @@ motivating binding is a recomputable observation-commitment primitive
 the scope and downstream verdicts share a common commitment. This is referenced
 as motivation only and is not a normative dependency.
 
-**Open question — `count`.** `count` is carried in `commitScope` because
-index-based schemes (the reference sorted-Merkle boundary cases) need cardinality
-on-chain; pure-accumulator schemes do not. The alternative is to commit
-cardinality inside `scopeRoot` for a fully scheme-agnostic signature, at the cost
-of changing the reference implementation. This is an open question for discussion.
+**Cardinality is not in the signature (the `count` decision).** An earlier draft
+carried `count` in `commitScope`. Because the interface's spine is "guarantees,
+not wire format" (opaque proof, non-portable schemes, optional scheme id), an
+explicit cardinality field was the one place a scheme-specific artifact leaked
+into the normative surface. It is removed; cardinality is bound into `scopeRoot`
+instead (guarantee 4). The guarantee the field implicitly provided — resistance
+to truncation/omission — does not disappear with the field; it is promoted to a
+normative requirement, because cardinality carried in an unbound proof would let a
+prover understate the set size and satisfy `verifyAbsence` against a proper
+prefix. Implementations keep cardinality as a forensic convenience outside the
+normative surface.
 
 ## Backwards Compatibility
 
@@ -169,7 +187,8 @@ No backwards compatibility issues. This is a new interface.
 
 ## Reference Implementation
 
-The reference implementation uses sorted-Merkle non-inclusion.
+The reference implementation uses sorted-Merkle non-inclusion, with cardinality
+bound into the commitment as `scopeRoot = H(merkleRoot, count)` (guarantee 4).
 
 - **Interface, registry, and verification record** — an independent
   re-implementation of the proof core and a soundness/completeness test suite
@@ -181,7 +200,10 @@ The reference implementation uses sorted-Merkle non-inclusion.
 
 - **Live worked example over a real asset-recovery job** — deployed on the
   Sepolia testnet, where "did the recovery include everything?" becomes an
-  on-chain, permissionless, recomputable question against an actual job:
+  on-chain, permissionless, recomputable question against an actual job. Includes
+  a truncation test: nominating a *declared* coordinate by understating the count
+  and proving against a proper prefix is rejected, because
+  `H(root(prefix), N-1) != H(root(full), N)`:
   https://github.com/TMerlini/hack-ens-recovery/tree/main/scope-contestation-demo
 
 Live Sepolia reference deployment:
@@ -190,15 +212,17 @@ Live Sepolia reference deployment:
 - A recovery job's observed asset set committed as a scope, bound to the job's
   commitment; a non-observed asset successfully nominated (the omission made
   permanent); the nomination of a *declared* asset reverts with "coordinate is in
-  scope", demonstrating soundness against a live job.
+  scope"; a truncation attempt reverts on the cardinality binding — together
+  demonstrating soundness against a live job.
 
 The non-inclusion construction: declared coordinates are committed as a Merkle
-root over a sorted list; absence of a coordinate `c` is proven by an adjacent
-declared pair straddling `c` (interior), or by `c` falling below the minimum or
-above the maximum declared coordinate. Verifier orientation is derived from
-public `(index, count)` only; leaves and nodes are domain-separated. Soundness
-rests on the committed list being sorted, which is publicly recomputable from the
-declared set (per guarantee 3).
+root over a sorted list, bound with the count; absence of a coordinate `c` is
+proven by an adjacent declared pair straddling `c` (interior), or by `c` falling
+below the minimum or above the maximum declared coordinate. Verifier orientation
+is derived from public `(index, count)` only; leaves and nodes are
+domain-separated. Soundness rests on the committed list being sorted, which is
+publicly recomputable from the declared set (guarantee 3), and on the cardinality
+binding (guarantee 4).
 
 ## Security Considerations
 
@@ -206,6 +230,12 @@ declared set (per guarantee 3).
   the reference scheme, soundness holds only if the committed coordinate list is
   sorted; sortedness is publicly recomputable from the declared set, so it is an
   auditable property rather than a trusted one.
+- **Truncation / omission.** Without cardinality bound to the commitment
+  (guarantee 4), a prover could understate the set size and satisfy
+  `verifyAbsence` against a proper prefix of the committed set, making a declared
+  coordinate appear absent. Binding cardinality into `scopeRoot` closes this; the
+  reference implementation includes an adversarial test that a truncated proof is
+  rejected.
 - **Spam.** Nomination is permissionless and cheap; any genuinely-absent
   coordinate can be nominated. Filtering/weighting is a downstream concern (e.g. a
   reputation layer). Bonded nomination is out of scope for this version because
