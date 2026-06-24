@@ -3,7 +3,7 @@ eip: <TBD>
 title: Scope Contestation Registry
 description: A permissionless registry that makes the incompleteness of an agent's committed observation scope contestable and recomputable on-chain.
 author: Damon Zwicker (@damonzwicker), Tiago Merlini (@TMerlini), Jimmy Shi (@JimmyShi22), Fede (@babyblueviper1)
-discussions-to: https://ethereum-magicians.org/t/erc-xxxx-scope-contestation-registry-permissionless-observation-scope-completeness-contestability/28856
+discussions-to: <Ethereum Magicians thread URL — create before filing>
 status: Draft
 type: Standards Track
 category: ERC
@@ -49,6 +49,19 @@ Concrete instances:
 - **Governance / assessment.** A decision made over an incomplete observation set
   passes every receipt check while resting on a flawed input. Nomination makes
   the omitted input contestable rather than silent.
+- **Bonded security audit.** An auditing agent commits its reviewed scope set
+  (the code paths and selectors it claims to have examined) bound to a signed
+  verdict, with a bond escrowed settle-once against that commitment. A slash fires
+  if and only if a challenger exhibits both (a) a nomination — a code path
+  provably absent from the committed scope set (this registry, w-independent) —
+  and (b) a replayable exploit transaction over that path. Because an exploit PoC
+  is itself a publicly recomputable witness, the classification function w
+  ("secure vs exploitable") is free: no abstract w needs to be published or
+  adjudicated. The slash never fires on opinion, only on a replayable exploit
+  against a provably-unreviewed path. This is the cleanest worked instance of
+  the full stack composing — witnessed verdict + settle-once escrow +
+  scope-contestation — on a real accountability problem: liability without
+  trusting the auditor, correctness without claiming it.
 
 ## Specification
 
