@@ -120,7 +120,7 @@ interface ICompletenessBond {
     ///         bond is already resolved or its term has ended. A bare omission
     ///         (absence without materiality) MUST NOT slash (guarantee 1).
     /// @param bondId           The bond to challenge.
-    /// @param coordinate       The claimed material omission.
+    /// @param nominatedCoordinate The raw coordinate descriptor X (pre-image) claimed as a material omission.
     /// @param materialityProof Layer-2 proof (carries the Layer-1 absence leg
     ///                         against the bound scopeRoot + the witness pair).
     function challenge(
