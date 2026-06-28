@@ -125,7 +125,7 @@ interface ICompletenessBond {
     ///                         against the bound scopeRoot + the witness pair).
     function challenge(
         bytes32 bondId,
-        bytes32 coordinate,
+        bytes calldata nominatedCoordinate,
         bytes calldata materialityProof
     ) external;
 
