@@ -161,5 +161,59 @@ const logs8 = parseLogs(r.execResult.logs, iface);
 check('idempotent recommit: no SourceAuthCommitted re-emitted',
   logs8.filter(l => l.name === 'SourceAuthCommitted').length === 0);
 
+// 9. verifyValueFidelity — canonical Vote[] round-trip on real bytecode.
+//    This is the Tiago-flagged path: recompute must land on the SAME bytes
+//    MajorityClassifier decodes. We encode Vote[] the canonical way, compute the
+//    root the contract's _recomputeRoot would, commit it, and assert fidelity true.
+const voteType = ['tuple(bytes32,uint8)[]'];
+const votes = [
+  [ethers.toBeHex(0x10, 32), 1],
+  [ethers.toBeHex(0x20, 32), 0],
+  [ethers.toBeHex(0x30, 32), 2],
+]; // sorted ascending on sourceId
+const aEnc = ethers.AbiCoder.defaultAbiCoder().encode(voteType, [votes]);
+
+// Recompute the root exactly as the contract does: leaf=keccak(abi.encode(bytes32,uint8)),
+// root=keccak(abi.encode(bytes32[] leaves)). Independent (ethers) re-derivation.
+const leaves = votes.map(([id, opt]) =>
+  ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'uint8'], [id, opt])));
+const rootEthers = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32[]'], [leaves]));
+
+const FID_SCOPE = ethers.toBeHex(0x777, 32);
+r = await send(addr, hexToBytes(iface.encodeFunctionData('commitResolution', [FID_SCOPE, rootEthers])));
+check('commitResolution succeeds', !r.execResult.exceptionError);
+
+// resolutionRootOf returns what we committed
+let rr = await call(addr, iface.encodeFunctionData('resolutionRootOf', [FID_SCOPE]));
+check('resolutionRootOf == committed root',
+  iface.decodeFunctionResult('resolutionRootOf', rr)[0].toLowerCase() === rootEthers.toLowerCase());
+
+// verifyValueFidelity(scopeId, a) true for the canonical Vote[] that produced the root
+let vf = await call(addr, iface.encodeFunctionData('verifyValueFidelity', [FID_SCOPE, aEnc]));
+check('fidelity: canonical Vote[] verifies true (EVM recompute == ethers recompute)',
+  iface.decodeFunctionResult('verifyValueFidelity', vf)[0] === true);
+
+// tampered option -> false
+const votesTampered = [
+  [ethers.toBeHex(0x10, 32), 9],
+  [ethers.toBeHex(0x20, 32), 0],
+  [ethers.toBeHex(0x30, 32), 2],
+];
+const aTampered = ethers.AbiCoder.defaultAbiCoder().encode(voteType, [votesTampered]);
+vf = await call(addr, iface.encodeFunctionData('verifyValueFidelity', [FID_SCOPE, aTampered]));
+check('fidelity: tampered option -> false',
+  iface.decodeFunctionResult('verifyValueFidelity', vf)[0] === false);
+
+// unsorted -> false (contract returns bytes32(0) root, != committed)
+const votesUnsorted = [
+  [ethers.toBeHex(0x30, 32), 2],
+  [ethers.toBeHex(0x10, 32), 1],
+  [ethers.toBeHex(0x20, 32), 0],
+];
+const aUnsorted = ethers.AbiCoder.defaultAbiCoder().encode(voteType, [votesUnsorted]);
+vf = await call(addr, iface.encodeFunctionData('verifyValueFidelity', [FID_SCOPE, aUnsorted]));
+check('fidelity: unsorted -> false',
+  iface.decodeFunctionResult('verifyValueFidelity', vf)[0] === false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

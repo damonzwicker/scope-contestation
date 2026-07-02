@@ -4,6 +4,19 @@ pragma solidity ^0.8.24;
 import {IResolutionCommitment} from "./IResolutionCommitment.sol";
 import {ISourceAuthVerifier}   from "./ISourceAuthVerifier.sol";
 
+/// @dev Canonical witness-pair reading, byte-identical to ScopeTypes.sol in
+///      TMerlini/hack-ens-recovery (scope-contestation-demo/contracts/src/ScopeTypes.sol):
+///          struct Vote { bytes32 sourceId; uint8 option; }
+///      Declared inline so this leg stays single-file; on merge, replace with
+///      `import {Vote} from ".../ScopeTypes.sol";` and delete this declaration.
+///      `option` is a uint8 enum discriminant (0..255), NOT an opaque bytes blob —
+///      this MUST match so the fidelity recompute lands on the same bytes the
+///      classifier hashes.
+struct Vote {
+    bytes32 sourceId;
+    uint8   option;
+}
+
 /// @title SourceAuthResolution — the third IResolutionCommitment (type-2 value-fidelity)
 /// @author damonzwicker (OCP / ERC-8281)  — CC0
 ///
@@ -428,21 +441,21 @@ contract SourceAuthResolution is IResolutionCommitment {
         return Verdict.VERIFIED;
     }
 
-    /// @dev Recomputes keccak256(abi.encode(sortedLeaves)) from a Vote[] encoding.
-    ///      leaf_i = keccak256(abi.encode(sourceId_i, value_i))
-    ///      Leaves MUST be sorted ascending on sourceId (same requirement as prior impl).
-    ///      Returns bytes32(0) on any decode failure (fail-closed).
+    /// @dev Recomputes the resolution root from a canonical `Vote[]` encoding.
+    ///      Scheme (owned by this contract — commitResolution stores it, this recomputes it):
+    ///          leaf_i = keccak256(abi.encode(sourceId_i, option_i))   // option is uint8
+    ///          root   = keccak256(abi.encode(sortedLeaves))
+    ///      Leaves MUST be sorted ascending on sourceId (truncation/duplicate resistance).
+    ///      Decodes to the canonical Vote{bytes32,uint8}[] — the SAME bytes the
+    ///      MajorityClassifier decodes — so the recompute never drifts from committed data.
+    ///      Returns bytes32(0) on empty/unsorted input (fail-closed).
     function _recomputeRoot(bytes calldata a) private pure returns (bytes32) {
-        // Decode as a sequence of (bytes32 sourceId, bytes value) pairs.
-        // The encoding matches Vote[] where Vote = {bytes32 sourceId, <option type>}.
-        // We accept the encoded bytes as-is and compute sorted-leaf root.
-        // NOTE: this is a reference implementation. The canonical Vote struct encoding
-        // must match exactly — verify against ScopeTypes.sol before merge.
-        (bytes32[] memory ids, bytes[] memory vals) = _decodeVotes(a);
+        (bytes32[] memory ids, uint8[] memory opts) = _decodeVotes(a);
         uint256 n = ids.length;
+        if (n == 0) return bytes32(0);
         bytes32[] memory leaves = new bytes32[](n);
         for (uint256 i = 0; i < n; i++) {
-            leaves[i] = keccak256(abi.encode(ids[i], vals[i]));
+            leaves[i] = keccak256(abi.encode(ids[i], opts[i]));
         }
         // Verify sorted ascending on sourceId (soundness requirement).
         for (uint256 i = 1; i < n; i++) {
@@ -451,14 +464,21 @@ contract SourceAuthResolution is IResolutionCommitment {
         return keccak256(abi.encode(leaves));
     }
 
-    /// @dev Decode Vote[] into parallel id/value arrays.
-    ///      ⚠ UNVERIFIED: the exact ABI layout depends on ScopeTypes.Vote which is
-    ///      not in the public repo. Assumes Vote = { bytes32 sourceId; bytes option; }.
-    ///      If Vote has additional fields this will revert (fail-closed). Verify before merge.
+    /// @dev Decode the canonical Vote{bytes32 sourceId; uint8 option}[] encoding into
+    ///      parallel arrays. Layout confirmed against ScopeTypes.sol (hack-ens-recovery).
+    ///      A malformed `a` reverts on decode (fail-closed) — correct: a non-canonical
+    ///      witness set MUST NOT read as faithful.
     function _decodeVotes(bytes calldata a)
         private pure
-        returns (bytes32[] memory ids, bytes[] memory vals)
+        returns (bytes32[] memory ids, uint8[] memory opts)
     {
-        (ids, vals) = abi.decode(a, (bytes32[], bytes[]));
+        Vote[] memory vs = abi.decode(a, (Vote[]));
+        uint256 n = vs.length;
+        ids  = new bytes32[](n);
+        opts = new uint8[](n);
+        for (uint256 i = 0; i < n; i++) {
+            ids[i]  = vs[i].sourceId;
+            opts[i] = vs[i].option;
+        }
     }
 }

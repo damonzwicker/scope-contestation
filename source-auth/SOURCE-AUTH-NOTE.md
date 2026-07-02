@@ -208,17 +208,48 @@ in the consuming decision regardless of its on-chain VERIFIED flag. This is the
   including **`digestOf` byte-identical across Python and the EVM** — two
   independent stacks agree on the recompute.
 
-## 9. ⚠ Open dependency (UNVERIFIED — mark, do not assume)
+## 9. Interface + type layout — CONFIRMED against canonical (Tiago/Fede review)
 
-The canonical `IResolutionCommitment.sol` is **not on public `main`** (the deploy
-script imports it from `src/` but that file, along with `ScopeContestation.sol`,
-`ResolutionCommitment.sol`, `Layer2PreCheck.sol`, `MajorityClassifier.sol`, is not
-in the snapshot). The interface here is a **reconstruction** from the session
-brief, the real `ILayer2PreCheck.contest` signature in `CompletenessBond.sol`, and
-the two public interfaces' house style. **Diff it against the local
-`src/IResolutionCommitment.sol` before merge.** If the canonical signature differs
-(param order, a `resolutionType()` discriminator, view vs non-view), the adapter
-changes — the design does not.
+Both prior open items are closed against the canonical sources in
+`TMerlini/hack-ens-recovery` (`scope-contestation-demo/contracts/src/`):
+
+- **`IResolutionCommitment.sol`** — now the canonical signature verbatim
+  (`verifyCoordinateValue(bytes32 scopeId, bytes32 key, bytes value)`,
+  plus `commitResolution`, `resolutionRootOf`, `verifyValueFidelity`). No longer a
+  reconstruction.
+- **`Vote` layout** — confirmed `struct Vote { bytes32 sourceId; uint8 option; }`
+  (ScopeTypes.sol, lines 24–27). `option` is a `uint8` enum discriminant, **not**
+  an opaque `bytes` blob, and the wire shape is `Vote[]` (array of structs), **not**
+  parallel arrays. `_decodeVotes` now decodes `abi.decode(a, (Vote[]))` and reads
+  `sourceId`/`option` — the same bytes `MajorityClassifier` decodes
+  (`abi.decode(b, (Vote[]))` in both `classify` and `_plurality`). The UNVERIFIED
+  marker is removed.
+
+**Two commitments, not one — do not conflate (Tiago's digest-path point).**
+There are two distinct hashes in this stack, and this leg touches only one:
+
+- `MajorityClassifier.classificationDigest` commits `keccak256(a)` and
+  `keccak256(b)` — raw keccak over the canonical `abi.encode(Vote[])` bytes. It
+  never re-encodes. **Guard 7 (`verifyCoordinateValue`) does not decode votes at
+  all** — it compares `keccak256(value)` against the committed attestation's
+  `valueRaw`. So the source-auth leg is *already* on the classifier's exact bytes;
+  there is no drift surface on the guard-7 path.
+- `resolutionRootOf(scopeId)` is a **separate** commitment, owned by this contract:
+  `commitResolution` stores it, `verifyValueFidelity` recomputes it. The scheme is
+  `leaf_i = keccak256(abi.encode(sourceId_i, option_i))`, `root =
+  keccak256(abi.encode(sortedLeaves))`, sorted ascending on `sourceId`
+  (truncation/duplicate resistance). Because this contract owns both the commit and
+  the recompute, the scheme is internally consistent by construction — the decode
+  round-trip is confined to the bulk-fidelity path and proven byte-identical across
+  three stacks (Python, ethers, Solidity bytecode).
+
+  *Design note for merge:* if the group prefers `resolutionRoot` to be a bare
+  `keccak256(a)` over the canonical `Vote[]` blob (matching the classifier's own
+  commitment style and deleting the decode round-trip entirely per Tiago's
+  suggestion), that is a one-line change to `verifyValueFidelity`/`commitResolution`
+  and removes `_recomputeRoot`/`_decodeVotes` wholesale. Kept as sorted-leaf here
+  because it preserves per-leaf truncation resistance and matches the prior
+  `ResolutionCommitment` semantics; flagged for the group's call.
 
 ## 10. Build plan / grant-narrative anchor
 

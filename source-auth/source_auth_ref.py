@@ -45,10 +45,61 @@ def _u64_word(x: int) -> bytes:
     return x.to_bytes(32, "big")
 
 
+def _u8_word(x: int) -> bytes:
+    assert 0 <= x < 256
+    return x.to_bytes(32, "big")
+
+
 def keccak256(data: bytes) -> bytes:
     k = keccak.new(digest_bits=256)
     k.update(data)
     return k.digest()
+
+
+def encode_votes(votes) -> bytes:
+    """
+    abi.encode(Vote[]) where Vote = { bytes32 sourceId; uint8 option; }.
+    Vote is a STATIC tuple (32 + 32 bytes), so Vote[] is a dynamic array of
+    fixed-size elements: the encoding is the array itself (offset handled by caller
+    when nested; standalone abi.encode(Vote[] a) = [len][elem0][elem1]...).
+    Solidity abi.decode(a, (Vote[])) expects: offset(0x20) then [len][elems].
+    """
+    n = len(votes)
+    head = (32).to_bytes(32, "big")           # offset to the array = 0x20
+    body = n.to_bytes(32, "big")              # length
+    for (source_id, option) in votes:
+        body += _b32(source_id) + _u8_word(option)
+    return head + body
+
+
+def encode_bytes32_array(items) -> bytes:
+    """abi.encode(bytes32[]) standalone: offset(0x20) then [len][items...]."""
+    head = (32).to_bytes(32, "big")
+    body = len(items).to_bytes(32, "big")
+    for it in items:
+        body += _b32(it)
+    return head + body
+
+
+def recompute_root(votes) -> bytes:
+    """
+    Mirror of SourceAuthResolution._recomputeRoot:
+      leaf_i = keccak256(abi.encode(sourceId_i, option_i))   # option uint8
+      root   = keccak256(abi.encode(sortedLeaves))
+    Returns b"" (i.e. bytes32(0)) on empty or unsorted (fail-closed).
+    NOTE: abi.encode(bytes32, uint8) for the leaf = 32-byte id || 32-byte padded option.
+    """
+    n = len(votes)
+    if n == 0:
+        return ZERO32
+    # sorted ascending on sourceId, strict (no duplicates)
+    for i in range(1, n):
+        if _b32(votes[i][0]) <= _b32(votes[i - 1][0]):
+            return ZERO32
+    leaves = []
+    for (source_id, option) in votes:
+        leaves.append(keccak256(_b32(source_id) + _u8_word(option)))
+    return keccak256(encode_bytes32_array(leaves))
 
 
 def digest_of(scope_id: bytes, inp: dict) -> bytes:
@@ -114,9 +165,27 @@ class SourceAuthRef:
         self.att = {}
         # Secondary index: digest -> (scope_id, key)
         self.digest_index = {}
+        # Bulk resolution roots: scope_id_bytes -> root
+        self.resolution_roots = {}
         self.tier0_ok = tier0_ok
         self.tier2_floor = tier2_floor
         self.max_accepted_tier = max_accepted_tier
+
+    def commit_resolution(self, scope_id, root: bytes):
+        scope_id = _b32(scope_id)
+        assert scope_id not in self.resolution_roots, "resolution already committed"
+        assert root != ZERO32, "empty root"
+        self.resolution_roots[scope_id] = root
+
+    def resolution_root_of(self, scope_id) -> bytes:
+        return self.resolution_roots.get(_b32(scope_id), ZERO32)
+
+    def verify_value_fidelity(self, scope_id, votes) -> bool:
+        """Mirror of verifyValueFidelity(scopeId, a): recompute root from a, compare."""
+        root = self.resolution_roots.get(_b32(scope_id), ZERO32)
+        if root == ZERO32:
+            return False
+        return recompute_root(votes) == root
 
     def commit(self, scope_id, inp: dict, *, now: int, committer: str = "0xcommitter"):
         scope_id = _b32(scope_id)
@@ -313,6 +382,35 @@ def run():
     d1 = rI.commit(SID, inpI, now=NOW)
     d2 = rI.commit(SID, inpI, now=NOW)  # identical -> no-op
     check("idempotent recommit same digest", d1 == d2)
+
+    # 12. verifyValueFidelity — canonical Vote[] round-trip (the path Tiago's fix enables)
+    rF = SourceAuthRef()
+    votes = [(_b32(0x10), 1), (_b32(0x20), 0), (_b32(0x30), 2)]  # sorted asc on sourceId
+    root = recompute_root(votes)
+    rF.commit_resolution(SID, root)
+    check("fidelity: canonical Vote[] verifies against committed root",
+          rF.verify_value_fidelity(SID, votes) is True)
+
+    # 13. fidelity fails on a tampered option (value half of adversarial-a)
+    tampered = [(_b32(0x10), 9), (_b32(0x20), 0), (_b32(0x30), 2)]  # option 1 -> 9
+    check("fidelity: tampered option rejected",
+          rF.verify_value_fidelity(SID, tampered) is False)
+
+    # 14. fidelity fails on unsorted / duplicate sourceIds (truncation resistance)
+    unsorted = [(_b32(0x30), 2), (_b32(0x10), 1), (_b32(0x20), 0)]
+    check("fidelity: unsorted rejected",
+          recompute_root(unsorted) == ZERO32)
+    dup = [(_b32(0x10), 1), (_b32(0x10), 1)]
+    check("fidelity: duplicate sourceId rejected",
+          recompute_root(dup) == ZERO32)
+
+    # 15. fidelity fails when no root committed (fail-closed)
+    rF2 = SourceAuthRef()
+    check("fidelity: no root committed -> false",
+          rF2.verify_value_fidelity(SID, votes) is False)
+
+    # 16. empty vote set -> root(0) -> not faithful
+    check("fidelity: empty votes -> zero root", recompute_root([]) == ZERO32)
 
     print(f"\n{passed} passed, {failed} failed")
     return failed == 0
